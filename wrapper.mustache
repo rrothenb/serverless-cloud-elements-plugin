@@ -1,0 +1,21 @@
+{{#modules}}
+  const {{name}} = require('./{{name}}');
+
+  {{#handlers}}
+    module.exports.{{name}}_{{.}} = async function (event, context, callback) {
+      try {
+        return await {{name}}.{{.}}(event, context, callback);
+      } catch (e) {
+        if (e.status) {
+          if (e.status === 500) {
+            callback(null, {statusCode: 502, body: e});
+          } else {
+            callback(null, {statusCode: e.status, body: e});
+          }
+        } else {
+          callback(null, {statusCode: 500, body: e});
+        }
+      }
+    }
+  {{/handlers}}
+{{/modules}}

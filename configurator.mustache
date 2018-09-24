@@ -1,0 +1,48 @@
+import {platformSDK} from './sdks/platformSDK'
+
+{{#variables}}
+  import { {{&type}}SDK } from './sdks/{{&type}}SDK'
+{{/variables}}
+
+interface Configuration {
+{{#variables}}
+  {{&name}}: {{&type}}SDK,
+{{/variables}}
+}
+
+interface Event {
+objectId: string,
+date: string,
+elementKey: string,
+pollDate: string,
+eventType: string,
+hubKey: string,
+objectType: string
+}
+
+interface Trigger {
+events: Event[],
+userId: number,
+elementKey: string
+accountId: number,
+eventId: string,
+companyId: number,
+instanceId: number,
+instanceName: string
+}
+
+export function configurator(input: any) : {trigger: Trigger, config: Configuration, platform: platformSDK, done: any} {
+let body = input[0].body;
+body = typeof body === 'object' ? body : JSON.parse(body);
+const trigger = body.message;
+const config = {
+{{#variables}}
+  {{&name}}: new {{&type}}SDK('{{&baseUrl}}', '{{&authHeader}}{{#token}}, Element {{&token}}{{/token}}'),
+{{/variables}}
+};
+const platform = new platformSDK('{{&baseUrl}}', '{{&authHeader}}');
+
+const done = response => input[2](null, {statusCode: 200, body: JSON.stringify(response)});
+
+return {trigger, config, platform, done}
+}
