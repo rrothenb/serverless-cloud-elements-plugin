@@ -158,12 +158,12 @@ Any failure will cause redelivery of the event.  Processing is synchronous and a
 In addition, because the invocation is synchronous, processing must complete in under 30 seconds to avoid a failure 
 and subsequent retries.
 
-#Example Project
+# Example Project
 
 This is an example of a contact sync integration, where changes to Salesforce contacts that have an email address
 are exported to another service using a Virtual Data Resource (VDR) called `myContact`.
 
-####package.json
+#### package.json
 ```json
 {
     "dependencies": {
@@ -174,7 +174,7 @@ are exported to another service using a Virtual Data Resource (VDR) called `myCo
     }
 }
 ```
-####serverless.yml
+#### serverless.yml
 ```yaml
 service: salesforce-finance-contact-sync
  
@@ -212,7 +212,7 @@ resources:
         baseUrl: ${env:BASE_URL}
 ```
         
-####contactSync.js
+#### contactSync.js
 ```javascript
 const {configurator} = require('./configurator');
  
