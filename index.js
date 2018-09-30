@@ -14,24 +14,6 @@ class ServerlessPlugin {
     };
   }
 
-  async afterDeploy() {
-    const provider = this.serverless.getProvider(this.serverless.service.provider.name);
-    const stage = this.options.stage || this.serverless.service.provider.stage;
-    const response = await provider.request('CloudFormation', 'describeStacks', {StackName: provider.naming.getStackName(stage)});
-    const endpoint = response.Stacks[0].Outputs.find(output => output.OutputKey === 'ServiceEndpoint').OutputValue;
-    const functions = this.serverless.service.functions
-    for (let key of Object.keys(functions)) {
-      for (let event of functions[key].events) {
-        if (event.http.id) {
-          this.serverless.cli.log(`setting instance ${event.http.id} callback url to ${endpoint}/${event.http.path}`);
-          await this.platform.updateInstanceById(event.http.id, {
-            configuration: {'event.notification.callback.url': `${endpoint}/${event.http.path}`}
-          }).run();
-        }
-      }
-    }
-  }
-
   async beforePackage() {
     let variables = [];
     let modules = [];
@@ -124,10 +106,15 @@ class ServerlessPlugin {
         }
       }
     }
+
+    // Once processed, the resources with Cloud Elements types should be removed as they're not valid
     const ceResources = Object.keys(resources).filter(key => resources[key].Type.startsWith('CE::'));
     for (let ceResource of ceResources) {
       delete resources[ceResource];
     }
+
+    // Generate the configurator (which provides type information for autocompletion) and
+    // the wrapper (which handles exceptions thrown by the handler)
     const template = fs.readFileSync(__dirname + '/configurator.mustache', 'utf8');
     const view = {
       baseUrl: accountProperties.baseUrl,
@@ -153,6 +140,26 @@ class ServerlessPlugin {
     fs.writeFileSync(process.cwd() + '/configurator.js', tsCompilerOutput.outputText);
     fs.writeFileSync(process.cwd() + '/wrapper.js', wrapper);
   }
+
+  async afterDeploy() {
+    const provider = this.serverless.getProvider(this.serverless.service.provider.name);
+    const stage = this.options.stage || this.serverless.service.provider.stage;
+    const response = await provider.request('CloudFormation', 'describeStacks', {StackName: provider.naming.getStackName(stage)});
+    const endpoint = response.Stacks[0].Outputs.find(output => output.OutputKey === 'ServiceEndpoint').OutputValue;
+    const functions = this.serverless.service.functions
+    for (let key of Object.keys(functions)) {
+      for (let event of functions[key].events) {
+        // if event.http.id is set, then that means this was originally an instance event so the callback should be set
+        if (event.http.id) {
+          this.serverless.cli.log(`setting instance ${event.http.id} callback url to ${endpoint}/${event.http.path}`);
+          await this.platform.updateInstanceById(event.http.id, {
+            configuration: {'event.notification.callback.url': `${endpoint}/${event.http.path}`}
+          }).run();
+        }
+      }
+    }
+  }
 }
+
 
 module.exports = ServerlessPlugin;
