@@ -23,7 +23,7 @@ class ServerlessPlugin {
     for (let key of Object.keys(functions)) {
       for (let event of functions[key].events) {
         if (event.http.id) {
-          console.log(`setting instance ${event.http.id} callback url to ${endpoint}/${event.http.path}`);
+          this.serverless.cli.log(`setting instance ${event.http.id} callback url to ${endpoint}/${event.http.path}`);
           await this.platform.updateInstanceById(event.http.id, {
             configuration: {'event.notification.callback.url': `${endpoint}/${event.http.path}`}
           }).run();
@@ -40,6 +40,15 @@ class ServerlessPlugin {
     for (let key of Object.keys(functions)) {
       for (let event of functions[key].events) {
         if (event.instance) {
+          if (!event.instance.resource) {
+            throw new Error(`Function '${key}' is in error: An instance event must specify a resource`);
+          }
+          if (!resources[event.instance.resource]) {
+            throw new Error(`Function '${key}' is in error: The referenced resource (${event.instance.resource}) does not exist`);
+          }
+          if (!resources[event.instance.resource].Properties) {
+            throw new Error(`Resource '${event.instance.resource}' is in error: The Properties object is missing`);
+          }
           const handler = functions[key].handler.split('.');
           const module = modules.find(module => module.name === handler[0]);
           if (module) {
@@ -50,7 +59,6 @@ class ServerlessPlugin {
             modules.push({name: handler[0], handlers: [handler[1]]});
           }
           functions[key].handler = `wrapper.${handler.join('_')}`;
-          event.http = `POST event/${event.instance.resource}`;
           event.http = {
             path: `event/${event.instance.resource}`,
             method: 'POST',
@@ -60,22 +68,32 @@ class ServerlessPlugin {
         }
       }
     }
-    const account = Object.entries(resources).find(entry => entry[1].Type === 'CE::Account')[1].Properties;
+    const account = Object.entries(resources).find(entry => entry[1].Type === 'CE::Account');
+    if (!account) {
+      throw new Error('Missing account resource (Type is CE::Account)');
+    }
+    const accountProperties = account[1].Properties;
+    if (!accountProperties) {
+      throw new Error(`Resource '${account[0]}' is in error: The Properties object is missing`);
+    }
     if (!fs.existsSync(process.cwd() + '/sdks')) {
       fs.mkdirSync(process.cwd() + '/sdks');
     }
     let authHeader;
-    if (account.userToken && account.orgToken) {
-      authHeader = `User ${account.userToken}, Organization ${account.orgToken}`;
+    if (accountProperties.userToken && accountProperties.orgToken) {
+      authHeader = `User ${accountProperties.userToken}, Organization ${accountProperties.orgToken}`;
     }
-    this.platform = new platformSDK(account.baseUrl, authHeader);
-    let result = await sdkifier.generatePlatformSdk(account.baseUrl, authHeader, null, 'sdks')
+    this.platform = new platformSDK(accountProperties.baseUrl, authHeader);
+    let result = await sdkifier.generatePlatformSdk(accountProperties.baseUrl, authHeader, null, 'sdks')
     for (let resource of Object.entries(resources)) {
       if (resource[1].Type.startsWith('CE::Hub::')) {
         const hub = resource[1].Type.substr(9);
-        result = await sdkifier.generateHubSdk(hub, account.baseUrl, authHeader, null, 'sdks');
+        result = await sdkifier.generateHubSdk(hub, accountProperties.baseUrl, authHeader, null, 'sdks');
         if (!result.success) {
           throw new Error(result.message);
+        }
+        if (!resource[1].Properties) {
+          throw new Error(`Resource '${resource[0]}' is in error: The Properties object is missing`);
         }
         if (resource[1].Properties.id) {
           const instance = await this.platform.getInstanceById(resource[1].Properties.id).run();
@@ -88,7 +106,7 @@ class ServerlessPlugin {
         if (resource[1].Properties.id) {
           result = await sdkifier.generateInstanceSdk(
             resource[1].Properties.id,
-            account.baseUrl,
+            accountProperties.baseUrl,
             authHeader,
             elementKey + 'SDK',
             'sdks');
@@ -98,7 +116,7 @@ class ServerlessPlugin {
           const instance = await this.platform.getInstanceById(resource[1].Properties.id).run();
           variables.push({name: resource[0], type: elementKey, token: instance.token});
         } else {
-          result = await sdkifier.generateElementSdk(elementKey, null, account.baseUrl, authHeader, null, 'sdks');
+          result = await sdkifier.generateElementSdk(elementKey, null, accountProperties.baseUrl, authHeader, null, 'sdks');
           if (!result.success) {
             throw new Error(result.message);
           }
@@ -112,7 +130,7 @@ class ServerlessPlugin {
     }
     const template = fs.readFileSync(__dirname + '/configurator.mustache', 'utf8');
     const view = {
-      baseUrl: account.baseUrl,
+      baseUrl: accountProperties.baseUrl,
       authHeader: authHeader,
       variables: variables
     };
@@ -129,7 +147,7 @@ class ServerlessPlugin {
         }
       });
     for (let diagnostic of tsCompilerOutput.diagnostics) {
-      console.log(diagnostic);
+      this.serverless.cli.log(diagnostic);
     }
     fs.writeFileSync(process.cwd() + '/configurator.ts', configurator);
     fs.writeFileSync(process.cwd() + '/configurator.js', tsCompilerOutput.outputText);
