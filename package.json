@@ -4,7 +4,7 @@
   "description": "Experimental Serverless Framework plugin that facilitates integration using Cloud Elements",
   "author": "Rick Rothenberg",
   "license": "MIT",
-  "devDependencies": {
+  "dependencies": {
     "ce-sdkifier": "^0.9.1",
     "mustache": "^2.3.2",
     "typescript": "^3.0.3"
