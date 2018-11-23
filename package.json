@@ -1,13 +1,13 @@
 {
   "name": "serverless-cloud-elements-plugin",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Experimental Serverless Framework plugin that facilitates integration using Cloud Elements",
   "author": "Rick Rothenberg",
   "license": "MIT",
   "dependencies": {
     "babel-core": "^6.26.3",
     "babel-preset-env": "^1.7.0",
-    "ce-sdkifier": "^0.9.4",
+    "ce-sdkifier": "^0.9.5",
     "mustache": "^2.3.2",
     "typescript": "^3.0.3"
   }
