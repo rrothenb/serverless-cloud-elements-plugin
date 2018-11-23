@@ -3,6 +3,7 @@ const sdkifier = require('ce-sdkifier');
 const mustache = require('mustache');
 const tsc = require('typescript');
 const {platformSDK} = require('./platformSDK')
+const babel = require('babel-core')
 
 class ServerlessPlugin {
   constructor(serverless, options) {
@@ -10,15 +11,18 @@ class ServerlessPlugin {
     this.options = options;
     this.hooks = {
       'before:package:initialize': this.beforePackage.bind(this),
-      'after:deploy:finalize': this.afterDeploy.bind(this)
+      'after:deploy:finalize': this.afterDeploy.bind(this),
+      'before:invoke:local:invoke': this.beforePackage.bind(this)
     };
   }
 
   async beforePackage() {
     let variables = [];
     let modules = [];
-    const functions = this.serverless.service.functions;
-    const resources = this.serverless.service.resources.Resources;
+    const service = this.serverless.service;
+    const provider = service.provider;
+    const functions = service.functions;
+    const resources = service.resources.Resources;
     for (let key of Object.keys(functions)) {
       for (let event of functions[key].events) {
         if (event.instance) {
@@ -46,6 +50,37 @@ class ServerlessPlugin {
             method: 'POST',
             id: resources[event.instance.resource].Properties.id
           }
+          const queueName = `${functions[key].name}-queue`
+          const queueRef = `${key}Queue`
+          functions[key].events.push({
+            sqs: {
+              arn: {
+                'Fn::GetAtt': [
+                  queueRef,
+                  'Arn'
+                ]
+              }
+            }
+          });
+          if (!provider.iamRoleStatements) {
+            provider.iamRoleStatements = [];
+          }
+          provider.iamRoleStatements.push({
+            Effect: 'Allow',
+            Action: ['sqs:sendMessage'],
+            Resource: {
+              'Fn::GetAtt': [
+                queueRef,
+                'Arn'
+              ]
+            }
+          })
+          resources[queueRef] = {
+              Type: 'AWS::SQS::Queue',
+              Properties: {
+                QueueName: queueName
+              }
+          };
           delete event.instance
         }
       }
@@ -139,18 +174,28 @@ class ServerlessPlugin {
     fs.writeFileSync(process.cwd() + '/configurator.ts', configurator);
     fs.writeFileSync(process.cwd() + '/configurator.js', tsCompilerOutput.outputText);
     fs.writeFileSync(process.cwd() + '/wrapper.js', wrapper);
+
+    for (let module of modules) {
+      const preprocessed = babel.transformFileSync(process.cwd() + '/' + module.name + '.js', {presets: ['env'], sourceMaps: 'inline'})
+      const processed = babel.transform(preprocessed.code, {plugins: [__dirname + '/checkpoint.plugin.js'], sourceMaps: 'inline'})
+      fs.writeFileSync(process.cwd() + '/' + module.name + '.babelized.js', processed.code);
+    }
   }
 
   async afterDeploy() {
     const provider = this.serverless.getProvider(this.serverless.service.provider.name);
     const stage = this.options.stage || this.serverless.service.provider.stage;
     const response = await provider.request('CloudFormation', 'describeStacks', {StackName: provider.naming.getStackName(stage)});
-    const endpoint = response.Stacks[0].Outputs.find(output => output.OutputKey === 'ServiceEndpoint').OutputValue;
+    const output = response.Stacks[0].Outputs.find(output => output.OutputKey === 'ServiceEndpoint');
+    if (!output) {
+      return
+    }
+    const endpoint = output.OutputValue
     const functions = this.serverless.service.functions
     for (let key of Object.keys(functions)) {
       for (let event of functions[key].events) {
         // if event.http.id is set, then that means this was originally an instance event so the callback should be set
-        if (event.http.id) {
+        if (event.http && event.http.id) {
           this.serverless.cli.log(`setting instance ${event.http.id} callback url to ${endpoint}/${event.http.path}`);
           await this.platform.updateInstanceById(event.http.id, {
             configuration: {'event.notification.callback.url': `${endpoint}/${event.http.path}`}

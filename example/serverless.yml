@@ -14,14 +14,14 @@ functions:
     memorySize: 256
     events:
       - instance:
-          resource: sfdc
+          resource: source
 
 resources:
   Resources:
-    sfdc:
+    source:
       Type: CE::Element::sfdc
       Properties:
-        id: ${env:SFDC_ID}
+        id: ${env:SOURCE_ID}
     dest:
       Type: CE::Hub::general
       Properties:

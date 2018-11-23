@@ -1,8 +1,9 @@
 {
     "dependencies": {
-        "superagent": "^3.8.2"
+        "superagent": "^3.8.2",
+        "serverless-cloud-elements-runtime": "^0.1.0"
     },
     "devDependencies": {
-        "serverless-cloud-elements-plugin": "file:../serverless-cloud-elements-plugin"
+        "serverless-cloud-elements-plugin": "^0.1.3"
     }
 }

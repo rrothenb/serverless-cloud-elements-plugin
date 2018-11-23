@@ -4,6 +4,8 @@ import {platformSDK} from './sdks/platformSDK'
   import { {{&type}}SDK } from './sdks/{{&type}}SDK'
 {{/variables}}
 
+const {register} = require('serverless-cloud-elements-runtime')
+
 interface Configuration {
 {{#variables}}
   {{&name}}: {{&type}}SDK,
@@ -33,13 +35,20 @@ instanceName: string
 
 export function configurator(input: any) : {trigger: Trigger, config: Configuration, platform: platformSDK, done: any} {
 let body = input[0].body;
+if (body) {
 body = typeof body === 'object' ? body : JSON.parse(body);
 const trigger = body.message;
+}
 const config = {
 {{#variables}}
   {{&name}}: new {{&type}}SDK('{{&baseUrl}}', '{{&authHeader}}{{#token}}, Element {{&token}}{{/token}}'),
 {{/variables}}
 };
+
+{{#variables}}
+  register({{&type}}SDK, obj => new {{&type}}SDK(obj.domain.replace('/elements/api-v2', ''), obj.authorizationHeader))
+{{/variables}}
+
 const platform = new platformSDK('{{&baseUrl}}', '{{&authHeader}}');
 
 const done = response => input[2](null, {statusCode: 200, body: JSON.stringify(response)});
