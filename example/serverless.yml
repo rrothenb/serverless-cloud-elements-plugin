@@ -2,7 +2,6 @@ service: salesforce-finance-contact-sync
 
 provider:
   name: aws
-  runtime: nodejs8.10
 
 plugins:
   - serverless-cloud-elements-plugin
@@ -10,8 +9,6 @@ plugins:
 functions:
   sync:
     handler: contactSync.eventHandler
-    timeout: 30
-    memorySize: 256
     events:
       - instance:
           resource: source

@@ -12,8 +12,17 @@ class ServerlessPlugin {
     this.hooks = {
       'before:package:initialize': this.beforePackage.bind(this),
       'after:deploy:finalize': this.afterDeploy.bind(this),
-      'before:invoke:local:invoke': this.beforePackage.bind(this)
+      'before:invoke:invoke': this.beforeInvoke.bind(this),
+      'before:invoke:local:invoke': this.beforeInvoke.bind(this),
     };
+  }
+
+  async beforeInvoke() {
+    const validFunctions = Object.keys(this.serverless.service.functions)
+    if (!validFunctions.includes(this.options.function)) {
+      throw `Function "${this.options.function}" doesn't exist in this Service. Valid values: ${validFunctions.join(', ')}`
+    }
+    return this.beforePackage()
   }
 
   async beforePackage() {
@@ -23,9 +32,48 @@ class ServerlessPlugin {
     const provider = service.provider;
     const functions = service.functions;
     const resources = service.resources.Resources;
+    if (!provider.runtime) {
+      provider.runtime = 'nodejs8.10';
+    }
+    const dlqName = `${service.service}-dead-letter-queue`
+    const dlqRef = 'deadLetterQueue'
+    if (!provider.iamRoleStatements) {
+      provider.iamRoleStatements = [];
+    }
+    provider.iamRoleStatements.push({
+      Effect: 'Allow',
+      Action: ['sqs:sendMessage', 'sqs:receiveMessage', 'sqs:deleteMessage'],
+      Resource: {
+        'Fn::GetAtt': [
+          dlqRef,
+          'Arn'
+        ]
+      }
+    })
+    resources[dlqRef] = {
+      Type: 'AWS::SQS::Queue',
+      Properties: {
+        QueueName: dlqName
+      }
+    };
+
     for (let key of Object.keys(functions)) {
       for (let event of functions[key].events) {
         if (event.instance) {
+          if (!functions[key].timeout) {
+            functions[key].timeout = 30;
+          }
+          if (!functions[key].memorySize) {
+            functions[key].memorySize = 128;
+          }
+          if (!functions[key].environment) {
+            functions[key].environment = {};
+          }
+          if (event.instance.maxCheckpointRetries) {
+            functions[key].environment.SCEP_MAX_CHECKPOINT_RETRIES = event.instance.maxCheckpointRetries;
+          } else {
+            functions[key].environment.SCEP_MAX_CHECKPOINT_RETRIES = 1;
+          }
           if (!event.instance.resource) {
             throw new Error(`Function '${key}' is in error: An instance event must specify a resource`);
           }
@@ -62,9 +110,6 @@ class ServerlessPlugin {
               }
             }
           });
-          if (!provider.iamRoleStatements) {
-            provider.iamRoleStatements = [];
-          }
           provider.iamRoleStatements.push({
             Effect: 'Allow',
             Action: ['sqs:sendMessage'],
@@ -76,10 +121,10 @@ class ServerlessPlugin {
             }
           })
           resources[queueRef] = {
-              Type: 'AWS::SQS::Queue',
-              Properties: {
-                QueueName: queueName
-              }
+            Type: 'AWS::SQS::Queue',
+            Properties: {
+              QueueName: queueName
+            }
           };
           delete event.instance
         }
@@ -140,6 +185,31 @@ class ServerlessPlugin {
           variables.push({name: resource[0], type: elementKey});
         }
       }
+    }
+
+    if (!service.package) {
+      service.package = {}
+    }
+    if (!service.package.exclude) {
+      service.package.exclude = []
+    }
+    service.package.exclude.push('node_modules/serverless-cloud-elements-plugin/node_modules/**')
+    service.package.exclude.push('node_modules/serverless-cloud-elements-runtime/node_modules/**')
+
+    // Add endpoint for resuming an execution that's in the DLQ
+    functions.resume = {
+      handler: 'wrapper.resume',
+      name: `${service.service}-${provider.stage}-resume`,
+      timeout: 30,
+      memorySize: 128,
+      events: [
+        {
+          http: {
+            path: 'resume',
+            method: 'post'
+          }
+        }
+      ]
     }
 
     // Once processed, the resources with Cloud Elements types should be removed as they're not valid
