@@ -57,6 +57,8 @@ class ServerlessPlugin {
       }
     };
 
+    const triggerVariables = [];
+
     for (let key of Object.keys(functions)) {
       for (let event of functions[key].events) {
         if (event.instance) {
@@ -83,6 +85,7 @@ class ServerlessPlugin {
           if (!resources[event.instance.resource].Properties) {
             throw new Error(`Resource '${event.instance.resource}' is in error: The Properties object is missing`);
           }
+          triggerVariables.push(event.instance.resource);
           const handler = functions[key].handler.split('.');
           const module = modules.find(module => module.name === handler[0]);
           if (module) {
@@ -159,7 +162,7 @@ class ServerlessPlugin {
         }
         if (resource[1].Properties.id) {
           const instance = await this.platform.getInstanceById(resource[1].Properties.id).run();
-          variables.push({name: resource[0], type: hub, token: instance.token});
+          variables.push({name: resource[0], type: hub, token: instance.token, id: resource[1].Properties.id});
         } else {
           variables.push({name: resource[0], type: hub});
         }
@@ -176,7 +179,7 @@ class ServerlessPlugin {
             throw new Error(result.message);
           }
           const instance = await this.platform.getInstanceById(resource[1].Properties.id).run();
-          variables.push({name: resource[0], type: elementKey, token: instance.token});
+          variables.push({name: resource[0], type: elementKey, token: instance.token, id: resource[1].Properties.id});
         } else {
           result = await sdkifier.generateElementSdk(elementKey, null, accountProperties.baseUrl, authHeader, null, 'sdks');
           if (!result.success) {
@@ -185,6 +188,65 @@ class ServerlessPlugin {
           variables.push({name: resource[0], type: elementKey});
         }
       }
+    }
+
+    const resourceSetsTableName = `${service.service}-${provider.stage}-resource-sets`
+    provider.iamRoleStatements.push({
+      Effect: 'Allow',
+      Action: ['dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:DeleteItem', 'dynamodb:GetItem'],
+      Resource: `arn:aws:dynamodb:*:*:table/${resourceSetsTableName}`
+    })
+    provider.iamRoleStatements.push({
+      Effect: 'Allow',
+      Action: ['dynamodb:Query'],
+      Resource: `arn:aws:dynamodb:*:*:table/${resourceSetsTableName}/index/*`
+    })
+
+    resources.resourceSets = {
+      Type: 'AWS::DynamoDB::Table',
+      Properties: {
+        AttributeDefinitions: [
+          {
+            AttributeName: 'userToken',
+            AttributeType: 'S'
+          },
+          {
+            AttributeName: 'id',
+            AttributeType: 'S'
+          }
+        ],
+        BillingMode: 'PAY_PER_REQUEST',
+        GlobalSecondaryIndexes: triggerVariables.map(variable => {return {
+          IndexName: `${variable}-index`,
+          KeySchema: [
+            {
+              AttributeName: `${variable}_id`,
+              KeyType: 'HASH'
+            }
+          ],
+          Projection: {
+            ProjectionType: 'ALL'
+          }
+        }}),
+        KeySchema: [
+          {
+            AttributeName: 'userToken',
+            KeyType: 'HASH'
+          },
+          {
+            AttributeName: 'id',
+            KeyType: 'RANGE'
+          }
+        ],
+        TableName: resourceSetsTableName
+      }
+    };
+
+    for (let variable of triggerVariables) {
+      resources.resourceSets.Properties.AttributeDefinitions.push({
+        AttributeName: `${variable}_id`,
+        AttributeType: 'N'
+      })
     }
 
     if (!service.package) {
@@ -207,6 +269,38 @@ class ServerlessPlugin {
           http: {
             path: 'resume',
             method: 'post'
+          }
+        }
+      ]
+    }
+
+    functions.resourceSetCRUD = {
+      handler: 'wrapper.resourceSetCRUD',
+      name: `${service.service}-${provider.stage}-resource-set-crud`,
+      timeout: 30,
+      memorySize: 128,
+      environment: {
+        ORG_TOKEN: accountProperties.orgToken,
+        TRIGGER_VARIABLES: JSON.stringify(triggerVariables),
+        VARIABLES: JSON.stringify(variables.map(variable => variable.name)),
+        TABLE_NAME: resourceSetsTableName,
+        BASE_URL: accountProperties.baseUrl,
+        DEFAULTS: JSON.stringify(variables.filter(variable => variable.id).reduce((result, variable) => {
+          result[variable.name] = Number(variable.id)
+          return result
+        }, {}))
+      },
+      events: [
+        {
+          http: {
+            path: 'resource-sets',
+            method: 'ANY'
+          }
+        },
+        {
+          http: {
+            path: 'resource-sets/{id}',
+            method: 'ANY'
           }
         }
       ]
@@ -268,7 +362,10 @@ class ServerlessPlugin {
         if (event.http && event.http.id) {
           this.serverless.cli.log(`setting instance ${event.http.id} callback url to ${endpoint}/${event.http.path}`);
           await this.platform.updateInstanceById(event.http.id, {
-            configuration: {'event.notification.callback.url': `${endpoint}/${event.http.path}`}
+            configuration: {
+              'event.notification.callback.url': `${endpoint}/${event.http.path}`,
+              'event.notification.enabled': 'true'
+            }
           }).run();
         }
       }
