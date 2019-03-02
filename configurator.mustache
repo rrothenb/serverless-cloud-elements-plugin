@@ -33,15 +33,21 @@ instanceId: number,
 instanceName: string
 }
 
-export function configurator(input: any) : {trigger: Trigger, config: Configuration, platform: platformSDK, done: any} {
+export async function configurator(input: any) : {trigger: Trigger, config: Configuration, platform: platformSDK, done: any} {
 let body = input[0].body;
+let trigger
 if (body) {
 body = typeof body === 'object' ? body : JSON.parse(body);
-const trigger = body.message;
+trigger = body.message;
 }
 
-const config = buildConfig(input[0].path, body && body.message && body.message.instanceId, '{{&baseUrl}}',
-'{{&authHeader}}', [
+const config = await buildConfig(
+input[1],
+input[0].path,
+body && body.message && body.message.instanceId,
+'{{&baseUrl}}',
+'{{&authHeader}}',
+[
 {{#variables}}
   {
   name: '{{&name}}',
@@ -50,7 +56,8 @@ const config = buildConfig(input[0].path, body && body.message && body.message.i
   id: '{{&id}}'
   }
 {{/variables}}
-null])
+null
+])
 
 {{#variables}}
   register({{&type}}SDK, obj => new {{&type}}SDK(obj.domain.replace('/elements/api-v2', ''), obj.authorizationHeader))

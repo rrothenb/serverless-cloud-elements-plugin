@@ -274,6 +274,11 @@ class ServerlessPlugin {
       ]
     }
 
+    if (!provider.environment) {
+      provider.environment = {}
+    }
+    provider.environment.RESOURCE_SETS_TABLE_NAME = resourceSetsTableName
+
     functions.resourceSetCRUD = {
       handler: 'wrapper.resourceSetCRUD',
       name: `${service.service}-${provider.stage}-resource-set-crud`,
@@ -283,7 +288,6 @@ class ServerlessPlugin {
         ORG_TOKEN: accountProperties.orgToken,
         TRIGGER_VARIABLES: JSON.stringify(triggerVariables),
         VARIABLES: JSON.stringify(variables.map(variable => variable.name)),
-        TABLE_NAME: resourceSetsTableName,
         BASE_URL: accountProperties.baseUrl,
         DEFAULTS: JSON.stringify(variables.filter(variable => variable.id).reduce((result, variable) => {
           result[variable.name] = Number(variable.id)
