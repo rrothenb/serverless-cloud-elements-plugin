@@ -2,7 +2,7 @@ const fs = require('fs');
 const sdkifier = require('ce-sdkifier');
 const mustache = require('mustache');
 const tsc = require('typescript');
-const {platformSDK} = require('./platformSDK')
+const {platformSDK} = require('ce-sdkifier/src/core/platformSDK')
 const babel = require('babel-core')
 
 class ServerlessPlugin {
@@ -161,7 +161,7 @@ class ServerlessPlugin {
           throw new Error(`Resource '${resource[0]}' is in error: The Properties object is missing`);
         }
         if (resource[1].Properties.id) {
-          const instance = await this.platform.getInstanceById(resource[1].Properties.id).run();
+          const instance = await this.platform.getInstanceById(resource[1].Properties.id);
           variables.push({name: resource[0], type: hub, token: instance.token, id: resource[1].Properties.id});
         } else {
           variables.push({name: resource[0], type: hub});
@@ -178,7 +178,7 @@ class ServerlessPlugin {
           if (!result.success) {
             throw new Error(result.message);
           }
-          const instance = await this.platform.getInstanceById(resource[1].Properties.id).run();
+          const instance = await this.platform.getInstanceById(resource[1].Properties.id);
           variables.push({name: resource[0], type: elementKey, token: instance.token, id: resource[1].Properties.id});
         } else {
           result = await sdkifier.generateElementSdk(elementKey, null, accountProperties.baseUrl, authHeader, null, 'sdks');
@@ -370,7 +370,7 @@ class ServerlessPlugin {
               'event.notification.callback.url': `${endpoint}/${event.http.path}`,
               'event.notification.enabled': 'true'
             }
-          }).run();
+          });
         }
       }
     }
