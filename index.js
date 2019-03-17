@@ -13,7 +13,7 @@ class ServerlessPlugin {
       'before:package:initialize': this.beforePackage.bind(this),
       'after:deploy:finalize': this.afterDeploy.bind(this),
       'before:invoke:invoke': this.beforeInvoke.bind(this),
-      'before:invoke:local:invoke': this.beforeInvoke.bind(this),
+      'before:invoke:local:invoke': this.beforeInvokeLocal.bind(this),
     };
   }
 
@@ -22,7 +22,19 @@ class ServerlessPlugin {
     if (!validFunctions.includes(this.options.function)) {
       throw `Function "${this.options.function}" doesn't exist in this Service. Valid values: ${validFunctions.join(', ')}`
     }
-    return this.beforePackage()
+    return this.prep(false)
+  }
+
+  async beforeInvokeLocal() {
+    const validFunctions = Object.keys(this.serverless.service.functions)
+    if (!validFunctions.includes(this.options.function)) {
+      throw `Function "${this.options.function}" doesn't exist in this Service. Valid values: ${validFunctions.join(', ')}`
+    }
+    return this.prep(true)
+  }
+
+  async beforePackage() {
+    return this.prep(true)
   }
 
   logDebug(message) {
@@ -31,7 +43,7 @@ class ServerlessPlugin {
     }
   }
 
-  async beforePackage() {
+  async prep(buildSdks) {
     let variables = [];
     let modules = [];
     const service = this.serverless.service;
@@ -155,16 +167,43 @@ class ServerlessPlugin {
       authHeader = `User ${accountProperties.userToken}, Organization ${accountProperties.orgToken}`;
     }
     this.platform = new platformSDK(accountProperties.baseUrl, authHeader);
-    this.logDebug('generating platform SDK')
-    let result = await sdkifier.generatePlatformSdk(accountProperties.baseUrl, authHeader, null, 'sdks')
+    if (this.options.sdks !== false && buildSdks) {
+      this.logDebug('generating platform SDK')
+      let result = await sdkifier.generatePlatformSdk(accountProperties.baseUrl, authHeader, null, 'sdks')
+      for (let resource of Object.entries(resources)) {
+        if (resource[1].Type.startsWith('CE::Hub::')) {
+          const hub = resource[1].Type.substr(9);
+          this.logDebug(`generating ${hub} SDK`)
+          result = await sdkifier.generateHubSdk(hub, accountProperties.baseUrl, authHeader, null, 'sdks');
+          if (!result.success) {
+            throw new Error(result.message);
+          }
+        } else if (resource[1].Type.startsWith('CE::Element::')) {
+          const elementKey = resource[1].Type.substr(13);
+          if (resource[1].Properties.id) {
+            this.logDebug(`generating ${elementKey} SDK`)
+            result = await sdkifier.generateInstanceSdk(
+              resource[1].Properties.id,
+              accountProperties.baseUrl,
+              authHeader,
+              elementKey + 'SDK',
+              'sdks');
+            if (!result.success) {
+              throw new Error(result.message);
+            }
+          } else {
+            this.logDebug(`generating ${elementKey} SDK`)
+            result = await sdkifier.generateElementSdk(elementKey, null, accountProperties.baseUrl, authHeader, null, 'sdks');
+            if (!result.success) {
+              throw new Error(result.message);
+            }
+          }
+        }
+      }
+    }
     for (let resource of Object.entries(resources)) {
       if (resource[1].Type.startsWith('CE::Hub::')) {
         const hub = resource[1].Type.substr(9);
-        this.logDebug(`generating ${hub} SDK`)
-        result = await sdkifier.generateHubSdk(hub, accountProperties.baseUrl, authHeader, null, 'sdks');
-        if (!result.success) {
-          throw new Error(result.message);
-        }
         if (!resource[1].Properties) {
           throw new Error(`Resource '${resource[0]}' is in error: The Properties object is missing`);
         }
@@ -177,24 +216,9 @@ class ServerlessPlugin {
       } else if (resource[1].Type.startsWith('CE::Element::')) {
         const elementKey = resource[1].Type.substr(13);
         if (resource[1].Properties.id) {
-          this.logDebug(`generating ${elementKey} SDK`)
-          result = await sdkifier.generateInstanceSdk(
-            resource[1].Properties.id,
-            accountProperties.baseUrl,
-            authHeader,
-            elementKey + 'SDK',
-            'sdks');
-          if (!result.success) {
-            throw new Error(result.message);
-          }
           const instance = await this.platform.getInstanceById(resource[1].Properties.id);
           variables.push({name: resource[0], type: elementKey, token: instance.token, id: resource[1].Properties.id});
         } else {
-          this.logDebug(`generating ${elementKey} SDK`)
-          result = await sdkifier.generateElementSdk(elementKey, null, accountProperties.baseUrl, authHeader, null, 'sdks');
-          if (!result.success) {
-            throw new Error(result.message);
-          }
           variables.push({name: resource[0], type: elementKey});
         }
       }

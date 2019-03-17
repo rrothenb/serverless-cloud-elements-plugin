@@ -67,5 +67,13 @@ const platform = new platformSDK('{{&baseUrl}}', '{{&authHeader}}');
 
 const done = response => input[2](null, {statusCode: 200, body: JSON.stringify(response)});
 
-return {trigger, config, platform, done}
+const result = {trigger, config, platform, done}
+
+if (config) {
+  for (let key of Object.keys(config)) {
+    result[key] = config[key]
+  }
+}
+
+return result
 }
