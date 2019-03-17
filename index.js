@@ -25,6 +25,12 @@ class ServerlessPlugin {
     return this.beforePackage()
   }
 
+  logDebug(message) {
+    if (process.env.SLS_DEBUG === '*') {
+      this.serverless.cli.log(message)
+    }
+  }
+
   async beforePackage() {
     let variables = [];
     let modules = [];
@@ -149,10 +155,12 @@ class ServerlessPlugin {
       authHeader = `User ${accountProperties.userToken}, Organization ${accountProperties.orgToken}`;
     }
     this.platform = new platformSDK(accountProperties.baseUrl, authHeader);
+    this.logDebug('generating platform SDK')
     let result = await sdkifier.generatePlatformSdk(accountProperties.baseUrl, authHeader, null, 'sdks')
     for (let resource of Object.entries(resources)) {
       if (resource[1].Type.startsWith('CE::Hub::')) {
         const hub = resource[1].Type.substr(9);
+        this.logDebug(`generating ${hub} SDK`)
         result = await sdkifier.generateHubSdk(hub, accountProperties.baseUrl, authHeader, null, 'sdks');
         if (!result.success) {
           throw new Error(result.message);
@@ -169,6 +177,7 @@ class ServerlessPlugin {
       } else if (resource[1].Type.startsWith('CE::Element::')) {
         const elementKey = resource[1].Type.substr(13);
         if (resource[1].Properties.id) {
+          this.logDebug(`generating ${elementKey} SDK`)
           result = await sdkifier.generateInstanceSdk(
             resource[1].Properties.id,
             accountProperties.baseUrl,
@@ -181,6 +190,7 @@ class ServerlessPlugin {
           const instance = await this.platform.getInstanceById(resource[1].Properties.id);
           variables.push({name: resource[0], type: elementKey, token: instance.token, id: resource[1].Properties.id});
         } else {
+          this.logDebug(`generating ${elementKey} SDK`)
           result = await sdkifier.generateElementSdk(elementKey, null, accountProperties.baseUrl, authHeader, null, 'sdks');
           if (!result.success) {
             throw new Error(result.message);
