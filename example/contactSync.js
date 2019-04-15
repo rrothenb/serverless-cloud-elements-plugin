@@ -1,27 +1,21 @@
 const {configurator} = require('./configurator');
 
-async function syncContact(myContact, dest, total) {
-    const foundContacts = await dest.getByObjectName('myContact').where(`Email='${myContact.Email}'`).run();
-    $checkpoint('syncingContact', total);
-    if (foundContacts.length === 1) {
-      await dest.replaceObjectNameByObjectId('myContact', foundContacts[0].Id, myContact).run();
-      console.log(`${foundContacts[0].Id} updated`);
-    } else {
-      const newContact = await dest.createByObjectName('myContact', myContact).run();
-      console.log(`${newContact.Id} created`);
-    }
-}
-
 async function eventHandler() {
-    const {trigger, config} = await configurator(arguments);
-    $checkpoint('eventReceived');
-    for (let i = 0; i < trigger.events.length; i++) {
-      const event = trigger.events[i];
-      const myContact = await config.source.getMyContactById(event.objectId).run();
-      if (myContact.Email) {
-        await syncContact(myContact, config.dest, trigger.events.length);
+  const {trigger, source, dest} = await configurator(arguments);
+  $checkpoint('eventReceived');
+  for (let event of trigger.events) {
+    const myContact = await source.getMyContactById(event.objectId);
+    if (myContact.Email) {
+      const foundContacts = await dest.getByObjectName('myContact').where(`Email='${myContact.Email}'`);
+      if (foundContacts.length === 1) {
+        await dest.replaceObjectNameByObjectId('myContact', foundContacts[0].Id, myContact);
+        console.log(`${foundContacts[0].Id} updated`);
+      } else {
+        const newContact = await dest.createByObjectName('myContact', myContact);
+        console.log(`${newContact.Id} created`);
       }
     }
+  }
 }
 
 module.exports.eventHandler = eventHandler;

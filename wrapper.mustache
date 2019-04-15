@@ -1,5 +1,5 @@
 {{#modules}}
-  const {{name}} = require('./{{name}}.babelized');
+  const {{name}} = require('./{{name}}');
 
   {{#handlers}}
     module.exports.{{name}}_{{.}} = async function (event, context, callback) {

@@ -17,19 +17,20 @@ class ServerlessPlugin {
     };
   }
 
-  async beforeInvoke() {
+  validateFunction() {
     const validFunctions = Object.keys(this.serverless.service.functions)
     if (!validFunctions.includes(this.options.function)) {
       throw `Function "${this.options.function}" doesn't exist in this Service. Valid values: ${validFunctions.join(', ')}`
     }
+  }
+
+  async beforeInvoke() {
+    this.validateFunction()
     return this.prep(false)
   }
 
   async beforeInvokeLocal() {
-    const validFunctions = Object.keys(this.serverless.service.functions)
-    if (!validFunctions.includes(this.options.function)) {
-      throw `Function "${this.options.function}" doesn't exist in this Service. Valid values: ${validFunctions.join(', ')}`
-    }
+    this.validateFunction()
     return this.prep(true)
   }
 
@@ -43,21 +44,43 @@ class ServerlessPlugin {
     }
   }
 
-  async prep(buildSdks) {
-    let variables = [];
-    let modules = [];
-    const service = this.serverless.service;
-    const provider = service.provider;
-    const functions = service.functions;
-    const resources = service.resources.Resources;
-    if (!provider.runtime) {
-      provider.runtime = 'nodejs8.10';
+  async prepSdks(accountProperties, authHeader, resources) {
+    this.logDebug('generating platform SDK')
+    this.platform = new platformSDK(accountProperties.baseUrl, authHeader);
+    for (let resource of Object.entries(resources)) {
+      if (resource[1].Type.startsWith('CE::Hub::')) {
+        const hub = resource[1].Type.substr(9);
+        this.logDebug(`generating ${hub} SDK`)
+        const result = await sdkifier.generateHubSdk(hub, accountProperties.baseUrl, authHeader, null, 'sdks');
+        if (!result.success) {
+          throw new Error(result.message);
+        }
+      } else if (resource[1].Type.startsWith('CE::Element::')) {
+        const elementKey = resource[1].Type.substr(13);
+        this.logDebug(`generating ${elementKey} SDK`)
+        if (resource[1].Properties.id) {
+          const result = await sdkifier.generateInstanceSdk(
+            resource[1].Properties.id,
+            accountProperties.baseUrl,
+            authHeader,
+            elementKey + 'SDK',
+            'sdks');
+          if (!result.success) {
+            throw new Error(result.message);
+          }
+        } else {
+          const result = await sdkifier.generateElementSdk(elementKey, null, accountProperties.baseUrl, authHeader, null, 'sdks');
+          if (!result.success) {
+            throw new Error(result.message);
+          }
+        }
+      }
     }
+  }
+
+  async prepCheckpoints(service, provider, resources, functions, modules) {
     const dlqName = `${service.service}-dead-letter-queue`
     const dlqRef = 'deadLetterQueue'
-    if (!provider.iamRoleStatements) {
-      provider.iamRoleStatements = [];
-    }
     provider.iamRoleStatements.push({
       Effect: 'Allow',
       Action: ['sqs:sendMessage', 'sqs:receiveMessage', 'sqs:deleteMessage'],
@@ -74,156 +97,68 @@ class ServerlessPlugin {
         QueueName: dlqName
       }
     };
-
-    const triggerVariables = [];
-
     for (let key of Object.keys(functions)) {
+      const queueName = `${functions[key].name}-queue`
+      const queueRef = `${key}Queue`
+      functions[key].events.push({
+        sqs: {
+          arn: {
+            'Fn::GetAtt': [
+              queueRef,
+              'Arn'
+            ]
+          }
+        }
+      });
+      provider.iamRoleStatements.push({
+        Effect: 'Allow',
+        Action: ['sqs:sendMessage'],
+        Resource: {
+          'Fn::GetAtt': [
+            queueRef,
+            'Arn'
+          ]
+        }
+      })
+      resources[queueRef] = {
+        Type: 'AWS::SQS::Queue',
+        Properties: {
+          QueueName: queueName
+        }
+      }
       for (let event of functions[key].events) {
-        if (event.instance) {
-          if (!functions[key].timeout) {
-            functions[key].timeout = 30;
-          }
-          if (!functions[key].memorySize) {
-            functions[key].memorySize = 128;
-          }
-          if (!functions[key].environment) {
-            functions[key].environment = {};
-          }
-          if (event.instance.maxCheckpointRetries) {
-            functions[key].environment.SCEP_MAX_CHECKPOINT_RETRIES = event.instance.maxCheckpointRetries;
-          } else {
-            functions[key].environment.SCEP_MAX_CHECKPOINT_RETRIES = 1;
-          }
-          if (!event.instance.resource) {
-            throw new Error(`Function '${key}' is in error: An instance event must specify a resource`);
-          }
-          if (!resources[event.instance.resource]) {
-            throw new Error(`Function '${key}' is in error: The referenced resource (${event.instance.resource}) does not exist`);
-          }
-          if (!resources[event.instance.resource].Properties) {
-            throw new Error(`Resource '${event.instance.resource}' is in error: The Properties object is missing`);
-          }
-          triggerVariables.push(event.instance.resource);
-          const handler = functions[key].handler.split('.');
-          const module = modules.find(module => module.name === handler[0]);
-          if (module) {
-            if (!module.handlers.includes(handler[1])) {
-              module.handlers.push(handler[1]);
-            }
-          } else {
-            modules.push({name: handler[0], handlers: [handler[1]]});
-          }
-          functions[key].handler = `wrapper.${handler.join('_')}`;
-          event.http = {
-            path: `event/${event.instance.resource}`,
-            method: 'POST',
-            id: resources[event.instance.resource].Properties.id
-          }
-          const queueName = `${functions[key].name}-queue`
-          const queueRef = `${key}Queue`
-          functions[key].events.push({
-            sqs: {
-              arn: {
-                'Fn::GetAtt': [
-                  queueRef,
-                  'Arn'
-                ]
-              }
-            }
-          });
-          provider.iamRoleStatements.push({
-            Effect: 'Allow',
-            Action: ['sqs:sendMessage'],
-            Resource: {
-              'Fn::GetAtt': [
-                queueRef,
-                'Arn'
-              ]
-            }
-          })
-          resources[queueRef] = {
-            Type: 'AWS::SQS::Queue',
-            Properties: {
-              QueueName: queueName
-            }
-          };
-          delete event.instance
-        }
-      }
-    }
-    const account = Object.entries(resources).find(entry => entry[1].Type === 'CE::Account');
-    if (!account) {
-      throw new Error('Missing account resource (Type is CE::Account)');
-    }
-    const accountProperties = account[1].Properties;
-    if (!accountProperties) {
-      throw new Error(`Resource '${account[0]}' is in error: The Properties object is missing`);
-    }
-    if (!fs.existsSync(process.cwd() + '/sdks')) {
-      fs.mkdirSync(process.cwd() + '/sdks');
-    }
-    let authHeader;
-    if (accountProperties.userToken && accountProperties.orgToken) {
-      authHeader = `User ${accountProperties.userToken}, Organization ${accountProperties.orgToken}`;
-    }
-    this.platform = new platformSDK(accountProperties.baseUrl, authHeader);
-    if (this.options.sdks !== false && buildSdks) {
-      this.logDebug('generating platform SDK')
-      let result = await sdkifier.generatePlatformSdk(accountProperties.baseUrl, authHeader, null, 'sdks')
-      for (let resource of Object.entries(resources)) {
-        if (resource[1].Type.startsWith('CE::Hub::')) {
-          const hub = resource[1].Type.substr(9);
-          this.logDebug(`generating ${hub} SDK`)
-          result = await sdkifier.generateHubSdk(hub, accountProperties.baseUrl, authHeader, null, 'sdks');
-          if (!result.success) {
-            throw new Error(result.message);
-          }
-        } else if (resource[1].Type.startsWith('CE::Element::')) {
-          const elementKey = resource[1].Type.substr(13);
-          if (resource[1].Properties.id) {
-            this.logDebug(`generating ${elementKey} SDK`)
-            result = await sdkifier.generateInstanceSdk(
-              resource[1].Properties.id,
-              accountProperties.baseUrl,
-              authHeader,
-              elementKey + 'SDK',
-              'sdks');
-            if (!result.success) {
-              throw new Error(result.message);
-            }
-          } else {
-            this.logDebug(`generating ${elementKey} SDK`)
-            result = await sdkifier.generateElementSdk(elementKey, null, accountProperties.baseUrl, authHeader, null, 'sdks');
-            if (!result.success) {
-              throw new Error(result.message);
-            }
-          }
-        }
-      }
-    }
-    for (let resource of Object.entries(resources)) {
-      if (resource[1].Type.startsWith('CE::Hub::')) {
-        const hub = resource[1].Type.substr(9);
-        if (!resource[1].Properties) {
-          throw new Error(`Resource '${resource[0]}' is in error: The Properties object is missing`);
-        }
-        if (resource[1].Properties.id) {
-          const instance = await this.platform.getInstanceById(resource[1].Properties.id);
-          variables.push({name: resource[0], type: hub, token: instance.token, id: resource[1].Properties.id});
+        if (event.maxCheckpointRetries) {
+          functions[key].environment.SCEP_MAX_CHECKPOINT_RETRIES = event.maxCheckpointRetries;
+          delete event.maxCheckpointRetries
         } else {
-          variables.push({name: resource[0], type: hub});
-        }
-      } else if (resource[1].Type.startsWith('CE::Element::')) {
-        const elementKey = resource[1].Type.substr(13);
-        if (resource[1].Properties.id) {
-          const instance = await this.platform.getInstanceById(resource[1].Properties.id);
-          variables.push({name: resource[0], type: elementKey, token: instance.token, id: resource[1].Properties.id});
-        } else {
-          variables.push({name: resource[0], type: elementKey});
+          functions[key].environment.SCEP_MAX_CHECKPOINT_RETRIES = 1;
         }
       }
     }
+    // Add endpoint for resuming an execution that's in the DLQ
+    functions.resume = {
+      handler: 'wrapper.resume',
+      name: `${service.service}-${provider.stage}-resume`,
+      timeout: 30,
+      memorySize: 128,
+      events: [
+        {
+          http: {
+            path: 'resume',
+            method: 'post'
+          }
+        }
+      ]
+    }
+    for (let module of modules) {
+      const preprocessed = babel.transformFileSync(process.cwd() + '/' + module.name + '.js', {presets: ['env'], sourceMaps: 'inline'})
+      const processed = babel.transform(preprocessed.code, {plugins: [__dirname + '/checkpoint.plugin.js'], sourceMaps: 'inline'})
+      fs.writeFileSync(process.cwd() + '/' + module.name + '.babelized.js', processed.code);
+      module.name = module.name + '.babelized'
+    }
+  }
 
+  async prepResourceSets(service, provider, resources, triggerVariables, variables, accountProperties, functions) {
     const resourceSetsTableName = `${service.service}-${provider.stage}-resource-sets`
     provider.iamRoleStatements.push({
       Effect: 'Allow',
@@ -282,35 +217,6 @@ class ServerlessPlugin {
         AttributeType: 'N'
       })
     }
-
-    if (!service.package) {
-      service.package = {}
-    }
-    if (!service.package.exclude) {
-      service.package.exclude = []
-    }
-    service.package.exclude.push('node_modules/serverless-cloud-elements-plugin/node_modules/**')
-    service.package.exclude.push('node_modules/serverless-cloud-elements-runtime/node_modules/**')
-
-    // Add endpoint for resuming an execution that's in the DLQ
-    functions.resume = {
-      handler: 'wrapper.resume',
-      name: `${service.service}-${provider.stage}-resume`,
-      timeout: 30,
-      memorySize: 128,
-      events: [
-        {
-          http: {
-            path: 'resume',
-            method: 'post'
-          }
-        }
-      ]
-    }
-
-    if (!provider.environment) {
-      provider.environment = {}
-    }
     provider.environment.RESOURCE_SETS_TABLE_NAME = resourceSetsTableName
 
     functions.resourceSetCRUD = {
@@ -323,6 +229,7 @@ class ServerlessPlugin {
         TRIGGER_VARIABLES: JSON.stringify(triggerVariables),
         VARIABLES: JSON.stringify(variables.map(variable => variable.name)),
         BASE_URL: accountProperties.baseUrl,
+        // TODO this may not work for value variables
         DEFAULTS: JSON.stringify(variables.filter(variable => variable.id).reduce((result, variable) => {
           result[variable.name] = Number(variable.id)
           return result
@@ -342,6 +249,125 @@ class ServerlessPlugin {
           }
         }
       ]
+    }
+  }
+
+  async prep(buildSdks) {
+    let variables = [];
+    let modules = [];
+    const service = this.serverless.service;
+    const provider = service.provider;
+    const functions = service.functions;
+    if (!service.resources) {
+      service.resources = {}
+    }
+    if (!service.resources.Resources) {
+      service.resources.Resources = {}
+    }
+    const resources = service.resources.Resources;
+
+    if (!provider.runtime) {
+      provider.runtime = 'nodejs8.10';
+    }
+    if (!provider.iamRoleStatements) {
+      provider.iamRoleStatements = [];
+    }
+    if (!provider.environment) {
+      provider.environment = {}
+    }
+    if (!service.package) {
+      service.package = {}
+    }
+    if (!service.package.exclude) {
+      service.package.exclude = []
+    }
+
+    if (!provider.runtime) {
+      provider.runtime = 'nodejs8.10';
+    }
+
+    const triggerVariables = [];
+
+    for (let key of Object.keys(functions)) {
+      if (!functions[key].timeout) {
+        functions[key].timeout = 30;
+      }
+      if (!functions[key].memorySize) {
+        functions[key].memorySize = 128;
+      }
+      if (!functions[key].environment) {
+        functions[key].environment = {};
+      }
+      const handler = functions[key].handler.split('.');
+      const module = modules.find(module => module.name === handler[0]);
+      if (module) {
+        if (!module.handlers.includes(handler[1])) {
+          module.handlers.push(handler[1]);
+        }
+      } else {
+        modules.push({name: handler[0], handlers: [handler[1]]});
+      }
+      functions[key].handler = `wrapper.${handler.join('_')}`;
+      for (let event of functions[key].events) {
+        if (event.instance) {
+          if (!event.instance.resource) {
+            throw new Error(`Function '${key}' is in error: An instance event must specify a resource`);
+          }
+          if (!resources[event.instance.resource]) {
+            throw new Error(`Function '${key}' is in error: The referenced resource (${event.instance.resource}) does not exist`);
+          }
+          triggerVariables.push(event.instance.resource);
+          event.http = {
+            path: `event/${event.instance.resource}`,
+            method: 'POST',
+            id: resources[event.instance.resource].Properties.id
+          }
+          delete event.instance
+        }
+      }
+    }
+    const account = Object.entries(resources).find(entry => entry[1].Type === 'CE::Account');
+    const accountProperties = account && account[1] ? account[1].Properties : {}
+    let authHeader;
+    if (accountProperties && accountProperties.userToken && accountProperties.orgToken) {
+      authHeader = `User ${accountProperties.userToken}, Organization ${accountProperties.orgToken}`;
+    }
+
+    if (this.options.sdks !== false && buildSdks) {
+      await this.prepSdks(accountProperties, authHeader, resources)
+    }
+    // TODO value variables also need to be saved in variables so that the configurator can populate and expose them
+    // TODO But instance variables need to be called out for the configurator template for proper processing
+    for (let resource of Object.entries(resources)) {
+      if (resource[1].Type.startsWith('CE::Hub::')) {
+        const hub = resource[1].Type.substr(9);
+        if (this.platform && resource[1].Properties && resource[1].Properties.id) {
+          const instance = await this.platform.getInstanceById(resource[1].Properties.id);
+          variables.push({name: resource[0], type: hub, token: instance.token, id: resource[1].Properties.id});
+        } else {
+          variables.push({name: resource[0], type: hub});
+        }
+      } else if (resource[1].Type.startsWith('CE::Element::')) {
+        const elementKey = resource[1].Type.substr(13);
+        if (this.platform && resource[1].Properties && resource[1].Properties.id) {
+          const instance = await this.platform.getInstanceById(resource[1].Properties.id);
+          variables.push({name: resource[0], type: elementKey, token: instance.token, id: resource[1].Properties.id});
+        } else {
+          variables.push({name: resource[0], type: elementKey});
+        }
+      }
+    }
+
+    if (this.options.resourceSets !== false) {
+      this.prepResourceSets(service, provider, resources, triggerVariables, variables, accountProperties, functions)
+    }
+
+    service.package.exclude.push('node_modules/serverless-cloud-elements-plugin/node_modules/**')
+    service.package.exclude.push('node_modules/serverless-cloud-elements-plugin/example/**')
+    service.package.exclude.push('node_modules/serverless-cloud-elements-runtime/node_modules/**')
+
+    if (this.options.checkpoints !== false) {
+      this.prepCheckpoints(service, provider, resources, functions, modules)
     }
 
     // Once processed, the resources with Cloud Elements types should be removed as they're not valid
@@ -376,12 +402,6 @@ class ServerlessPlugin {
     fs.writeFileSync(process.cwd() + '/configurator.ts', configurator);
     fs.writeFileSync(process.cwd() + '/configurator.js', tsCompilerOutput.outputText);
     fs.writeFileSync(process.cwd() + '/wrapper.js', wrapper);
-
-    for (let module of modules) {
-      const preprocessed = babel.transformFileSync(process.cwd() + '/' + module.name + '.js', {presets: ['env'], sourceMaps: 'inline'})
-      const processed = babel.transform(preprocessed.code, {plugins: [__dirname + '/checkpoint.plugin.js'], sourceMaps: 'inline'})
-      fs.writeFileSync(process.cwd() + '/' + module.name + '.babelized.js', processed.code);
-    }
   }
 
   async afterDeploy() {

@@ -70,9 +70,9 @@ const done = response => input[2](null, {statusCode: 200, body: JSON.stringify(r
 const result = {trigger, config, platform, done}
 
 if (config) {
-  for (let key of Object.keys(config)) {
-    result[key] = config[key]
-  }
+for (let key of Object.keys(config)) {
+result[key] = config[key]
+}
 }
 
 return result
