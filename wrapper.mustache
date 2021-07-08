@@ -1,5 +1,5 @@
 {{#modules}}
-  const {{name}} = require('./{{name}}.babelized');
+  const {{name}} = require('./{{name}}');
 
   {{#handlers}}
     module.exports.{{name}}_{{.}} = async function (event, context, callback) {
@@ -22,3 +22,4 @@
 
 const runtime = require('serverless-cloud-elements-runtime');
 module.exports.resume = runtime.resume;
+module.exports.resourceSetCRUD = runtime.resourceSetCRUD;

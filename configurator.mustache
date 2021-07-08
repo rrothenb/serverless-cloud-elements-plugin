@@ -4,7 +4,7 @@ import {platformSDK} from './sdks/platformSDK'
   import { {{&type}}SDK } from './sdks/{{&type}}SDK'
 {{/variables}}
 
-const {register} = require('serverless-cloud-elements-runtime')
+const {register, buildConfig} = require('serverless-cloud-elements-runtime')
 
 interface Configuration {
 {{#variables}}
@@ -33,17 +33,31 @@ instanceId: number,
 instanceName: string
 }
 
-export function configurator(input: any) : {trigger: Trigger, config: Configuration, platform: platformSDK, done: any} {
+export async function configurator(input: any) : {trigger: Trigger, config: Configuration, platform: platformSDK, done: any} {
 let body = input[0].body;
+let trigger
 if (body) {
 body = typeof body === 'object' ? body : JSON.parse(body);
-const trigger = body.message;
+trigger = body.message;
 }
-const config = {
+
+const config = await buildConfig(
+input[1],
+input[0].path,
+body && body.message && body.message.instanceId,
+'{{&baseUrl}}',
+'{{&authHeader}}',
+[
 {{#variables}}
-  {{&name}}: new {{&type}}SDK('{{&baseUrl}}', '{{&authHeader}}{{#token}}, Element {{&token}}{{/token}}'),
+  {
+  name: '{{&name}}',
+  type: '{{&type}}',
+  token: '{{&token}}',
+  id: '{{&id}}'
+  }
 {{/variables}}
-};
+null
+])
 
 {{#variables}}
   register({{&type}}SDK, obj => new {{&type}}SDK(obj.domain.replace('/elements/api-v2', ''), obj.authorizationHeader))
@@ -53,5 +67,13 @@ const platform = new platformSDK('{{&baseUrl}}', '{{&authHeader}}');
 
 const done = response => input[2](null, {statusCode: 200, body: JSON.stringify(response)});
 
-return {trigger, config, platform, done}
+const result = {trigger, config, platform, done}
+
+if (config) {
+for (let key of Object.keys(config)) {
+result[key] = config[key]
+}
+}
+
+return result
 }
